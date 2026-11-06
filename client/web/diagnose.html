@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ноосфера · диагностика</title>
+<style>
+  :root{
+    --bg:#EDF1EA; --surface:#FFFFFF; --ink:#1B241F; --dim:#5A675F;
+    --accent:#155D4B; --accent-hover:#0F4A3B; --line:#DDE4DA; --ctrl:#7A8B7C;
+    --warn-bg:#FCF3D7; --warn-ink:#7A5410; --bad-bg:#F7E4E0; --bad-ink:#8F352C;
+    --ok-bg:#E4EFE7; --ok-ink:#155D4B;
+    --mono:"JetBrains Mono",Consolas,"Cascadia Mono",monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:var(--bg);color:var(--ink);
+       font:15px/1.55 "Golos Text","Segoe UI",system-ui,-apple-system,sans-serif;
+       padding:28px 20px 48px}
+  .wrap{max-width:860px;margin:0 auto}
+  header{margin-bottom:22px}
+  h1{font-size:22px;margin:0 0 6px;font-weight:650;letter-spacing:-.01em}
+  .reason{color:var(--bad-ink);background:var(--bad-bg);border:1px solid var(--line);
+          border-radius:8px;padding:8px 12px;display:inline-block;font-size:14px}
+  .reason.ok{color:var(--ok-ink);background:var(--ok-bg)}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);
+     margin:26px 0 10px;font-weight:600}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:10px;
+        padding:4px 0;overflow:hidden}
+  .row{display:flex;gap:12px;padding:10px 14px;border-top:1px solid var(--line);align-items:flex-start}
+  .row:first-child{border-top:0}
+  .chip{flex:0 0 auto;font:600 12px/1.9 var(--mono);padding:0 8px;border-radius:999px;
+        border:1px solid var(--ctrl);color:var(--dim);background:var(--bg)}
+  .chip.ok{color:var(--ok-ink);background:var(--ok-bg);border-color:var(--ok-ink)}
+  .chip.bad{color:var(--bad-ink);background:var(--bad-bg);border-color:var(--bad-ink)}
+  .name{font-weight:600}
+  .detail{color:var(--dim);font:13px/1.5 var(--mono);word-break:break-word}
+  .hint{color:var(--warn-ink);background:var(--warn-bg);border-radius:6px;
+        padding:6px 10px;margin-top:6px;font-size:13px}
+  .actions{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px}
+  button{font:600 14px/1 "Golos Text","Segoe UI",system-ui,sans-serif;cursor:pointer;
+         border-radius:8px;padding:11px 16px;border:1px solid var(--ctrl);
+         background:var(--surface);color:var(--ink)}
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  @media (hover:hover){
+    button.primary:hover{background:var(--accent-hover);border-color:var(--accent-hover)}
+    button:not(.primary):hover{background:var(--bg)}
+  }
+  button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  button:disabled{opacity:.55;cursor:default}
+  pre{background:var(--surface);border:1px solid var(--line);border-radius:10px;
+      padding:12px 14px;font:12px/1.6 var(--mono);color:var(--dim);
+      max-height:220px;overflow:auto;white-space:pre-wrap;word-break:break-word}
+  .meta{color:var(--dim);font:12px/1.7 var(--mono);margin-top:18px}
+  .meta b{color:var(--ink);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Ноосфера не открылась — вот что проверено</h1>
+    <div class="reason" id="reason">проверяю…</div>
+  </header>
+
+  <h2>Проверки</h2>
+  <div class="card" id="checks"></div>
+
+  <h2>Что делать</h2>
+  <div class="card" id="steps"></div>
+
+  <div class="actions">
+    <button class="primary" id="retry">Повторить проверку</button>
+    <button id="openlog">Открыть журнал</button>
+    <button id="copy">Скопировать сводку</button>
+    <button id="quit">Выйти</button>
+  </div>
+
+  <h2>Журнал приложения</h2>
+  <pre id="log">…</pre>
+
+  <div class="meta" id="meta"></div>
+</div>
+
+<script>
+"use strict";
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let last=null;
+
+const STEPS={
+  server:["Сервер на Mac mini не отвечает. Проверь, что Мак включён и не спит; на Маке должен жить uvicorn на :8300 (keepalive поднимает его сам, если настроен). Дома попробуй ещё раз через минуту — LAN и tailnet проверяются оба."],
+  token:["Нет токена доступа. Скопируй токен боевого сервера в файл одной строкой (путь показан в проверке «Токен доступа»), без кавычек и переносов, затем нажми «Повторить проверку»."],
+  files:["Файлы клиента повреждены или не все. Восстанови рабочую копию каталога noosphere (git status / git checkout в пакете проекта)."],
+  runtime:["Не найден WebView2 Runtime или pythonw. На Windows 11 WebView2 обычно на месте; если его нет — поставь Microsoft Edge WebView2 Runtime."],
+  other:["Посмотри журнал ниже: последняя строка ERROR обычно называет причину."]
+};
+
+function render(d){
+  last=d;
+  const bad=!d.server;
+  $("reason").textContent=bad?("Причина: "+(d.reason||"неизвестно")):"Сервер жив: "+d.server;
+  $("reason").className="reason"+(bad?"":" ok");
+  $("checks").innerHTML=(d.rows||[]).map(r=>
+    '<div class="row"><span class="chip '+(r.ok?"ok":"bad")+'">'+(r.ok?"OK":"СБОЙ")+"</span>"+
+    '<div><div class="name">'+esc(r.name)+"</div>"+
+    '<div class="detail">'+esc(r.detail)+"</div>"+
+    (r.ok||!r.hint?"":'<div class="hint">'+esc(r.hint)+"</div>")+"</div></div>").join("");
+  const kinds=[...new Set((d.rows||[]).filter(r=>!r.ok).map(r=>r.kind))];
+  const steps=(kinds.length?kinds:["other"]).flatMap(k=>STEPS[k]||STEPS.other);
+  $("steps").innerHTML=steps.map((s,i)=>
+    '<div class="row"><span class="chip">'+(i+1)+"</span><div>"+esc(s)+"</div></div>").join("");
+  $("log").textContent=(d.log_tail||[]).join("\n")||"(журнал пуст)";
+  const a=d.autostart||{};
+  $("meta").innerHTML=
+    "<b>python</b> "+esc(d.python)+" · <b>каталог состояния</b> "+esc(d.home)+
+    "<br><b>журнал</b> "+esc(d.log_path)+
+    "<br><b>кандидаты сервера</b> "+esc((d.servers||[]).join(", "))+
+    "<br><b>автозапуск</b> "+(a.enabled?"включён":"выключен")+
+    (a.enabled?" · команда: "+esc(a.command):"")+
+    "<br><b>пакет</b> "+esc(d.repo);
+}
+
+async function call(name,...args){
+  const api=window.pywebview&&window.pywebview.api;
+  if(!api||!api[name]) throw new Error("нет моста pywebview: "+name);
+  return api[name](...args);
+}
+
+async function load(){
+  try{ render(await call("get_diag")); }
+  catch(e){ $("reason").textContent="мост pywebview недоступен: "+e; }
+}
+
+$("retry").addEventListener("click",async()=>{
+  const btn=$("retry"); btn.disabled=true; btn.textContent="Проверяю…";
+  try{
+    const r=await call("retry");
+    if(r.decision==="ui"){ $("reason").textContent="Сервер жив: "+r.server+" — открываю рабочее место…"; $("reason").className="reason ok"; }
+    else{ await load(); }
+  }catch(e){ $("reason").textContent="повтор не удался: "+e; }
+  finally{ btn.disabled=false; btn.textContent="Повторить проверку"; }
+});
+$("openlog").addEventListener("click",()=>call("open_log").catch(()=>{}));
+$("quit").addEventListener("click",()=>call("quit_app").catch(()=>{}));
+$("copy").addEventListener("click",async()=>{
+  if(!last) return;
+  const lines=["Ноосфера · диагностика "+new Date().toISOString(),
+    "решение: "+(last.server?("ui "+last.server):("diagnose: "+last.reason)),
+    ...(last.rows||[]).map(r=>(r.ok?"[OK]   ":"[СБОЙ] ")+r.name+" — "+r.detail)];
+  const text=lines.join("\n");
+  try{ await navigator.clipboard.writeText(text); }
+  catch(e){
+    const ta=document.createElement("textarea");
+    ta.value=text; document.body.appendChild(ta); ta.select();
+    document.execCommand("copy"); ta.remove();
+  }
+  $("copy").textContent="Скопировано";
+  setTimeout(()=>{$("copy").textContent="Скопировать сводку";},1500);
+});
+
+/* Мост pywebview внедряется асинхронно (NavigationCompleted), поэтому не ставка
+   на один таймаут, а опрос: холодный старт WebView2 может занять несколько секунд. */
+let loaded=false;
+const t0=Date.now();
+function tryLoad(){
+  if(loaded) return;
+  if(window.pywebview&&window.pywebview.api){ loaded=true; load(); return; }
+  if(Date.now()-t0>20000){
+    $("reason").textContent="мост pywebview не появился за 20 секунд — закрой окно и открой ярлык ещё раз";
+    return;
+  }
+  setTimeout(tryLoad,250);
+}
+window.addEventListener("pywebviewready",tryLoad);
+tryLoad();
+</script>
+</body>
+</html>

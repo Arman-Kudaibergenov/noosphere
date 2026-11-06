@@ -1,0 +1,320 @@
+# Noosphere — конфиг сервера. Скопировать в config.yaml и заполнить.
+# Секреты: только пути к файлам (api_key_file) или env-имена (api_key_env),
+# сами ключи в конфиг НЕ пишем.
+
+server:
+  host: 0.0.0.0        # решение владельца 11.10: домашняя LAN доверенная, доступ по LAN;
+                       # аудит r2 F1 предлагал 127.0.0.1+tailnet — ОТКЛОНЁН владельцем;
+                       # компенсации: fail-closed auth + rate-limit + token_file.
+                       # TLS НЕ сделан — открытый хвост (см. PROTOCOL.md v1.4).
+  port: 8300
+  # Bearer для API. Приоритет: token_file > token > env NOOSPHERE_TOKEN.
+  # Пусто ОБА + host не loopback + lan_no_auth=false → отказ старта (fail-closed).
+  token_file: ~/.secrets/noosphere.token   # токен ВНЕ дерева деплоя и джейла
+  token: ""            # инлайн — только переходный режим (startup-варнинг в лог)
+  lan_no_auth: false   # true: LAN/tailnet без Bearer; внешние клиенты по-прежнему 401
+  tz_offset_hours: 4   # правило Армана 24.09: везде UTC+4
+  vault_key_file: ~/.secrets/noosphere-vault.key  # ключ Fernet для vault.secret (генерится при первом старте)
+  rate_limit:          # простой per-IP токен-бакет на /v1/* (превышение → 429)
+    enabled: true
+    rpm: 120
+    burst: 40
+
+data_dir: ./data       # SQLite и маркерные файлы сессий
+
+owner_user: arman      # логин владельца: приёмка засчитывает только его ходы
+                       # (turns.user == owner_user). На инстансе заказчика — его логин.
+
+# Стартовые проекты инстанса (дополняют нейтральный сид Ноосфера/Личное в коде;
+# контуры владельца — здесь, не в репозитории). Пример для заказчика — см.
+# config.biocard.example.yaml.
+# projects:
+#   seed:
+#     - {name: Биокард, keywords: "биокард,tms,шина,wms,тмс"}
+
+# Каналы провайдеров. quota_unit: calls | tokens — разворачивает экономику канала.
+# Пул аккаунтов (батч 4, опционально): accounts: перечисляет несколько ключей
+# канала; при auth/rate-limit текущий уходит на cooldown 10 мин и берётся
+# следующий (липкость: без отказа аккаунт НЕ меняется — переезд = потеря кэша).
+channels:
+  alibaba:
+    kind: alibaba            # OpenAI-compatible /chat/completions
+    base_url: https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1
+    api_key_file: ~/.secrets/alibaba-token-plan.key   # на Маке: ~/.secrets/alibaba-token-plan.key
+    # accounts:              # пример пула (перекрывает api_key_file выше):
+    #   - {label: основной, api_key_file: ~/.secrets/alibaba-token-plan.key}
+    #   - {label: запасной, api_key_env: ALIBABA_SPARE_KEY}
+    quota_unit: tokens
+    daily_budget_tokens: 1000000  # 20.10: на канал переехала вся лестница (payg-канал отключён) — 250К пробивались в тот же день
+    enabled: true
+    vision: true                  # v1.6: ход с картинками уходит сюда (мультимодальный content)
+    vision_model: qwen3.7-plus    # живая проба 11.10: qwen3-vl-flash/qwen-vl-max → model_not_found
+                                  # в этом плане; qwen3.7-plus видит (мин. сторона картинки >10px)
+  ollama:
+    kind: ollama
+    base_url: http://192.168.0.22:11434   # ollama на CT106 (живая проба 10.10)
+    quota_unit: tokens
+    daily_budget_tokens: 0
+    enabled: true            # локальный бесплатный тир; enabled=false → тир local пропускается
+  kimi-cli:
+    kind: kimi               # OAuth kimi CLI; токен живёт ~15 мин, сервер сам
+                             # обновляет через refresh_token (accounts.py)
+    base_url: https://api.kimi.com/coding/v1   # /v1 обязателен (проба 13.10: без него 404)
+    proxy: ""  # egress-прокси канала (http://host:port), пусто = напрямую; на боевом Маке kimi-cli ходит через privoxy контура (фильтр маршрута 30.10.2026).
+               # При транспортном отказе маршрута (ProxyError/ConnectError) тот же запрос
+               # повторяется напрямую — pool._post/alt_proxy (02.11: 12 × 503 Forwarding
+               # failure за 7 минут убили ночного судью, туннель egress лег на сутки)
+    credentials_file: ~/.kimi-code/credentials/kimi-code.json
+    quota_unit: calls
+    daily_budget_tokens: 0
+    enabled: true            # судья процессов 1С (модель k3.1-pro) ходит сюда
+  zen:
+    kind: zen                # opencode Go API: openai-compatible + ОБЯЗАТЕЛЬНЫЙ
+                             # заголовок x-opencode-session (иначе 400 MissingSessionID);
+                             # сервер шлёт стабильный uuid на процесс (pool.py)
+    base_url: https://opencode.ai/zen/go/v1
+    api_key_file: ~/.secrets/zen-go.key
+    quota_unit: tokens
+    daily_budget_tokens: 0
+    enabled: true            # спека (mimo-v2.6-pro) процессов 1С
+  qwencloud:
+    kind: qwencloud          # Alibaba payg (maas.qwencloudapi.com), OpenAI-compatible;
+                             # usage-эндпоинта нет — проба квот честно None (quotas.py)
+    base_url: https://maas.qwencloudapi.com/compatible-mode/v1
+    api_key_file: ~/.secrets/qwencloud.key
+    quota_unit: tokens
+    daily_budget_tokens: 0
+    enabled: false           # 20.10: владелец перенёс всё на подписку Token Plan; payg оставлен выключенным
+
+# Роутер: лестница тиров и дневные лимиты (порт из llm-router/llm.py).
+router:
+  # E5: потолок вывода по задаче. 1024 давал массовые обрывы по длине и
+  # лестницу ретраев с удвоением, где каждый ретрай заново оплачивает промпт.
+  max_tokens: 4096
+  # E6: запасной тир, когда лестница кончилась отказом (429 месячной квоты,
+  # 401 ключ, 5xx, «нет доступного тира»). Ход доигрывается на бесплатном
+  # канале без инструментов вместо пустой ошибки владельцу. Пусто — нет.
+  fallback_tier: base
+  # 0 = без лимита. Потолки вызовов по тирам в личном инстансе сняты (E0, аудит
+  # 2026-10-29): локальный канал бесплатен, поэтому лимит ограничивал работу, а не
+  # деньги — 29.10 tier:base сделал 302 вызова при лимите 300 и ходы эскалировали
+  # на mid с причиной «дневной лимит исчерпан». Расход виден в budgets и в UI;
+  # для платной подписки ограничение месячное и считается на уровне канала (E6).
+  limits: { local: 0, base: 0, mid: 0, deep: 0, max: 0 }
+  # Тир → канал и модель. Канон боевого config.yaml (git-ignored) на 02.11.2026:
+  # бесплатная станция несёт base и mid, подписка Token Plan — deep/max/vision.
+  tier_channels:
+    base: {channel: station, model: local/deepseek-flash, body: {enable_thinking: false}}
+    mid: {channel: station, model: local/deepseek-flash, body: {enable_thinking: false}}
+    deep: {channel: kimi-cli, model: k3.1-pro}
+    max: {channel: alibaba, model: qwen3.8-max}
+  # Роль → модель (02.11.2026). Лестница тиров перестала быть лестницей: base и
+  # mid — одна и та же station/local/deepseek-flash (95% объёма), поэтому
+  # эскалация не меняла модель, а следующий шаг deep уводил обычный чат и
+  # исполнителя прогонов на kimi k3.1-pro — модель ночного судьи с окном 100 вызовов
+  # на 5 часов. Роль задаёт маршрут явно; failover — её собственные запасные,
+  # глобальный fallback_tier в цепочке роли не применяется (судья на бесплатной
+  # флеш-модели пишет вердикт, неотличимый в отчёте от настоящего: замер 30 дней
+  # дал среднюю confidence 0,043 у deepseek-v4-pro против 0,719 у k3).
+  # Приоритет: force_channel (процессы 1С) > роль > tier= > CLASS_TIER.
+  roles:
+    route:   {channel: station, model: local/deepseek-flash, body: {enable_thinking: false}}
+    title:   {channel: station, model: local/deepseek-flash, body: {enable_thinking: false}}
+    summary: {channel: station, model: local/deepseek-flash, body: {enable_thinking: false}}
+    chat:    {channel: station, model: local/deepseek-flash, body: {enable_thinking: false},
+              failover: [{channel: alibaba, model: qwen3.8-flash, body: {reasoning_effort: low}}]}
+    worker:  {channel: station, model: local/deepseek-flash, body: {enable_thinking: false},
+              failover: [{channel: alibaba, model: qwen3.8-flash, body: {reasoning_effort: low}}]}
+    # тела вызовов сохранены как на лестнице: tier_channels.deep не несёт body,
+    # поэтому k3 получал TIERS["deep"] = enable_thinking/reasoning_effort — с ним
+    # и замерены 0,719 средней confidence за 30 дней. qwen3.8-flash/qwen3.8-max —
+    # тела TIERS["mid"]/TIERS["max"].
+    judge:   {channel: kimi-cli, model: k3.1-pro, body: {enable_thinking: true, reasoning_effort: high},
+              failover: [{channel: alibaba, model: qwen3.8-max, body: {reasoning_effort: low}}]}
+
+# Контур реакции (принцип «реакция первична»): алерт → владелец → SLA → эскалация.
+alerts:
+  transport: ssh-notify        # ssh-notify | bot | log
+  ssh_target: hermes@192.168.0.40   # notify.py читает stdin → TG форум «Рабочий»
+  notify_command: "~/.venv-notify/bin/python ~/bin/notify.py"   # apprise живёт в venv-notify
+  bot_token_file: ""           # для transport: bot
+  bot_chat_id: ""
+  sla_minutes: 30              # CRIT не ack через SLA → эскалация
+  digest_minutes: 60           # WARNING копятся в дайджест
+
+# Анти-цикл (урок Paperclip): бюджеты, терминальные условия, treading-water.
+antiloop:
+  budget_warn_pct: 70
+  budget_crit_pct: 90
+  max_repeat_fingerprint: 3    # ≥3 упавших вызова с тем же входом → стоп + эскалация
+  max_water_cycles: 4          # failed↔followup переходов подряд → treading-water
+
+# Инструменты агента (tools.py). Джейл путей (аудит r3, G1): запись ТОЛЬКО в
+# ~/workspace и /tmp; чтение — ~/workspace, /tmp + read_allow ниже; ~/noosphere
+# (код+БД), ~/.secrets и прочие секретные каталоги — deny. Shell-guard путей
+# отклоняет команды, упоминающие deny-пути (эвристика; основная защита — джейл).
+# approvals (G1.6): ssh вне allowlist / git push / внешние write-запросы из
+# агентского хода требуют подтверждения человека (POST /v1/approvals/{id}/approve,
+# TTL одобрения 10 мин). approval_allow — regex-паттерны штатных сценариев.
+tools:
+  enabled: true
+  shell: true
+  max_iters: 6
+  shell_timeout: 60
+  output_cap: 12000
+  # Компакция истории хода (замер 03.11): прежний единственный триггер «70% окна»
+  # на станции (131 072) = 91 750 токенов, а максимум контекста чат-хода за 7 дней
+  # был 77 134 — компакция не срабатывала ни разу, ходы росли до потолка раундов,
+  # а расход хода квадратичен по их числу (10 ходов с ≥40 раундами = 44,5% расхода
+  # чата). Ужатие отдельных сообщений истории для этого не годится: оно сбрасывает
+  # префикс-кэш провайдера (91,5% prompt-токенов чата — cache_read). 0 — выключено.
+  compact_above_tokens: 24000
+  stt_url: http://192.168.0.22:8899/transcribe   # gigastt файл-путь (CT106)
+  # Голос Ноосферы (режим «Разговор»): ESpeech — клон голоса, Silero — быстрый фолбэк
+  tts_url: http://192.168.0.22:8897/tts
+  tts_fallback_url: http://192.168.0.22:8898/tts
+  read_allow: []            # доп. каталоги чтения, напр. ["~/bc-personal-data"]
+  default_agent: true       # ход без явного agent=false идёт с инструментами (2026-10-17)
+
+# Единая точка входа (батч 6): классификатор запроса chat|agent|run + проекты.
+route:
+  enabled: true
+  tier: base                 # классификация — дешёвый тир, эскалация выключена
+  max_tokens: 300
+  confidence_threshold: 0.7  # ниже — клиент показывает кнопки выбора, не автовыбор
+  prefilter: true            # regex-маркеры (run раньше chat — «ран приоритетнее»)
+  analysis_hour: 4           # ночной анализатор route_log + качества ранов (локальное)
+  auto_projects: true        # классификатор может создавать проекты сам
+  auto_projects_max: 50      # сверх потолка — свалка в «Личное» + warning раз в сутки
+
+# Скилы агента (v1.7): каталог */SKILL.md с диска, инъекция имён в system
+# агентских ходов (тело модель тянет инструментом skill_load). REST /v1/skills.
+skills:
+  dir: ~/.agents/skills      # на Маке: ~292 скила, ~175 штук 1c-*
+  auto_include:              # glob-паттерны имён для инъекции каталога в system
+    - "1c-*"
+    - "cfe-*"
+    - "dev-loop"
+    - "ibcmd-farm"
+    - "form-*"
+    - "meta-*"
+    - "role-*"
+    - "scaffold-object"
+    - "subsystem-*"
+    - "extensions-*"
+
+# MCP-серверы контура (v1.7): минимальный streamable-HTTP клиент (server/mcp.py),
+# инструменты агента mcp_tools/mcp_call. Рабочий путь у всех серверов — /mcp.
+mcp:
+  servers:
+    atlas_tms:               # bsl-atlas ТМС: граф кода конфигураций (поиск по коду 1С)
+      url: http://192.168.3.136:8014/mcp    # путь / отвечает 404 — только /mcp
+      desc: поиск по кодовой базе 1С (структура метаданных, модули)
+      enabled: true
+    testpilot_farm:          # testpilot на ферме: управление тест-клиентами 1С
+      url: http://192.168.0.31:6004/mcp
+      desc: запуск/управление тест-клиентами 1С (tc_*)
+      enabled: true
+    rlm:
+      url: http://192.168.0.20:8250/mcp
+      desc: память фактов контура (route/search/add и остальные rlm_*)
+      enabled: true
+    run_orchestrator:
+      url: http://192.168.0.20:8251/mcp
+      desc: оркестратор ранов и atlas_search/run_* (7 инструментов)
+      enabled: true
+    bsl_zhetysu:
+      url: http://192.168.0.31:8105/mcp
+      desc: "bsl-atlas Zhetysu: граф кода 1С"
+      enabled: true
+    telegram:
+      url: http://100.65.118.22:8252/mcp   # userbot на hermes; tailnet-IP (LAN режет firewall)
+      desc: "Телеграм Армана (userbot на hermes): читать диалоги и историю, отправлять от его имени, тянуть вложения в файл"
+      enabled: true
+    laptop:
+      url: http://127.0.0.1:8254/mcp        # lap-mcp: stdlib-сервер на этом хосте, keepalive cron
+      desc: "Файлы ноутбука Армана (DESKTOP-UK7EU09): lap_ls/lap_cat/lap_get/lap_put/lap_run; ноутбук спит или выключен — ошибка инструмента, а не пустой список"
+      enabled: true
+    # MCP Биокарда (рукопожатие проверено 2026-10-21 с Мака и ноутбука; транспорта
+    # Streamable HTTP, у всех путь /mcp). atlas_tms выше = bsl-tms (8014), а
+    # arch-3p (8022) — тот же сервер, что arch, дублей не держим.
+    bsl_buh:
+      url: http://192.168.3.136:8011/mcp      # bsl-atlas Бухгалтерия (14 инструментов)
+      desc: граф кода 1С Бухгалтерии
+      enabled: true
+    bsl_zup:
+      url: http://192.168.3.136:8012/mcp      # bsl-atlas ЗУП (14)
+      desc: граф кода 1С ЗУП
+      enabled: true
+    bsl_erp:
+      url: http://192.168.3.136:8013/mcp      # bsl-atlas ERP (17)
+      desc: граф кода 1С ERP
+      enabled: true
+    bsl_ut:
+      url: http://192.168.3.136:8015/mcp      # bsl-atlas УТ (14)
+      desc: граф кода 1С УТ
+      enabled: true
+    bsl_wms:
+      url: http://192.168.3.136:8016/mcp      # bsl-atlas WMS (17)
+      desc: граф кода 1С WMS
+      enabled: true
+    arch:
+      url: http://192.168.3.136:8019/mcp      # индекс кода/доков/контрактов (10)
+      desc: поиск по коду, докам и контрактам GitLab Биокарда (209 репо)
+      enabled: true
+    grafana:
+      url: http://192.168.3.136:8023/mcp      # grafana-router (62 инструмента)
+      desc: алерты, логи, дашборды
+      enabled: true
+    rlm_biocard:
+      url: http://192.168.3.136:8200/mcp      # rlm-toolkit контура Биокарда (50)
+      desc: факты и контексты контура Биокарда
+      enabled: true
+    bitrix_docs:
+      url: https://mcp-dev.bitrix24.com/mcp   # b24-dev-mcp (5), авторизации нет
+      desc: документация Bitrix24 REST (dev-стенд)
+      enabled: true
+    # farm-router: host 192.168.3.140 не отвечал ни на ICMP, ни на порты (2026-10-21),
+    # ключа x-api-key в хранилище не нашлось. header-поддержка в mcp.py есть
+    # (значение или {from_file: путь}) — включить, когда host и ключ будут на месте.
+    farm_router:
+      url: http://192.168.3.140:8300/mcp
+      desc: farm-router Биокарда — маршрутизатор фермы
+      enabled: false
+      headers:
+        x-api-key:
+          from_file: ~/.secrets/farm-router.key
+
+# Самодействие прогона доработки (E0, аудит 2026-10-29).
+# Одобрений человеком нет (решения владельца 17.10 и 29.10): вместо гейта одобрения
+# патч проверяется своим же smoke ДО commit/push/рестарта. Грязное дерево = боевой
+# процесс собран не из git, поэтому патч отклоняется, а не применяется без коммита.
+# Мобильный доступ (образец Hermes Mobile). Профили, токены, mTLS и PIN живут
+# в БД и правятся в окне (раздел «Мобильный доступ»), здесь — только рамки.
+# Порт SSH-туннеля НЕ настраивается тут: он всегда равен server.port выше,
+# иначе телефон стучался бы не в тот порт.
+mobile:
+  enabled: true             # показывать раздел «Мобильный доступ»
+  loopback_host: 127.0.0.1  # адрес, который открывает телефон через туннель
+  session_ttl_hours: 12     # срок жизни мобильной сессии (0 = до «завершить все»)
+  default_expires_days: 30  # срок действия нового профиля (0 = бессрочно)
+  cert_days: 30             # срок клиентского сертификата mTLS
+
+
+devrun:
+  auto_apply: true        # патч успешного прогона применяется сам
+  auto_restart: true      # сервис перезапускается на новом коде
+  smoke_gate: true        # scripts/smoke.py обязан пройти до commit/push (~70 с)
+  smoke_timeout: 300      # сек на прогон smoke
+  allow_dirty: false      # не применять патч в дерево с незакоммиченными правками
+  # серверный исполнитель прогонов (server/devexec.py, 2026-10-31): прогон
+  # исполняет сам сервис в worktree СВОЕГО репозитория, патч проходит smoke до
+  # commit/push. Оболочка ноутбука для этого больше не нужна.
+  execute: true           # цикл исполнителя включён
+  poll_seconds: 5         # как часто смотреть очередь queued-прогонов
+  worktree_root: ~/workspace/noosphere-dev   # внутри джейла записи инструментов
+  exec_class: code        # класс задачи хода исполнителя → тир модели
+  exec_max_iters: 60      # потолок раундов инструментов
+  exec_budget: 0          # 0 → tools.turn_max_tokens
+  max_wall_minutes: 20    # стена на прогон
+  patch_max_chars: 400000 # потолок размера патча

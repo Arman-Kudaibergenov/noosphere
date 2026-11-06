@@ -1,0 +1,11 @@
+# Пины по боевому venv Мака (pip freeze 2026-10-12) + cryptography для vault (G1.5).
+# CI и deploy ставят из этого файла — проверенное == развёрнутое (B6).
+fastapi==0.143.0
+uvicorn[standard]==0.54.0
+httpx==0.28.1
+pydantic==2.14.0
+pyyaml==6.0.3
+cryptography==50.0.2
+# Web Push (PWA): без этого пакета сервер живёт как раньше, но push.enabled()
+# = False и телефон в кармане о завершённом ходе не узнает вовсе
+pywebpush==2.5.0

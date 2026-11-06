@@ -1,0 +1,81 @@
+# Noosphere — профиль инстанса заказчика (Биокард). Скопировать в config.yaml
+# и заполнить. Полный справочник опций — config.example.yaml.
+# Отличия от личного профиля: свои каналы (локальные модели), свои проекты,
+# свой владелец, без чужих TG/SSH-контуров и чужих MCP.
+
+server:
+  host: 0.0.0.0            # внутренняя LAN заказчика
+  port: 8300
+  token_file: ~/.secrets/noosphere.token
+  lan_no_auth: false
+  tz_offset_hours: 4
+
+data_dir: ./data
+
+owner_user: owner          # логин владельца инстанса (приёмка считает его ходы)
+
+projects:
+  seed:
+    - {name: Биокард, keywords: "биокард,tms,шина,wms,тмс"}
+
+# Каналы: локальный inference заказчика. base_url — хост с GPU
+# (OpenAI-compatible: vLLM/ollama), подставить реальный адрес.
+channels:
+  dsflash-local:
+    kind: ollama                              # ollama-совместимый; для vLLM — тот же контракт /chat/completions
+    base_url: http://GPU-HOST:11434           # ← заменить на адрес локального deepseek-flash
+    quota_unit: tokens
+    enabled: true
+  # vision: добавить, если на GPU есть мультимодальная модель:
+  #   vision: true
+  #   vision_model: <имя>
+
+# Лестница тиров: оба тира на локальный канал (бесплатно, без внешних API).
+router:
+  max_tokens: 1024
+  limits: {local: 0, base: 0, mid: 500, deep: 60, max: 20}
+
+route:
+  enabled: true
+  tier: base
+  max_tokens: 300
+  confidence_threshold: 0.7
+  prefilter: true
+  analysis_hour: 4
+  auto_projects: true
+  auto_projects_max: 50
+
+tools:
+  enabled: true
+  shell: true
+  max_iters: 6
+  shell_timeout: 60
+  output_cap: 8000
+  read_allow: []
+  default_agent: true
+  # stt_url: не задан — голосового ввода на инстансе заказчика нет
+
+alerts:
+  transport: log            # без TG: алерты в data/alerts-fallback.log + stderr
+
+skills:
+  dir: ~/.agents/skills
+  auto_include: ["1c-*", "cfe-*", "dev-loop", "ibcmd-farm", "form-*", "meta-*"]
+
+mcp:
+  servers:
+    bsl_buh:  {url: "http://192.168.3.136:8011/mcp", desc: "граф кода 1С Бухгалтерии", enabled: true}
+    bsl_zup:  {url: "http://192.168.3.136:8012/mcp", desc: "граф кода 1С ЗУП", enabled: true}
+    bsl_erp:  {url: "http://192.168.3.136:8013/mcp", desc: "граф кода 1С ERP", enabled: true}
+    bsl_tms:  {url: "http://192.168.3.136:8014/mcp", desc: "граф кода 1С ТМС (src-tms)", enabled: true}
+    bsl_ut:   {url: "http://192.168.3.136:8015/mcp", desc: "граф кода 1С УТ", enabled: true}
+    bsl_wms:  {url: "http://192.168.3.136:8016/mcp", desc: "граф кода 1С WMS", enabled: true}
+    # farm-router требует x-api-key (headers.from_file):
+    # farm_router:
+    #   url: "http://192.168.3.140:8300/mcp"
+    #   desc: "farm-router Биокарда"
+    #   enabled: false
+    #   headers: {x-api-key: {from_file: "~/.secrets/farm-router-apikey"}}
+
+# Первичное наполнение vault — scripts/seed_vault_biocard.json:
+#   VAULT_SEED_FILE=scripts/seed_vault_biocard.json ./.venv/bin/python scripts/seed_vault.py

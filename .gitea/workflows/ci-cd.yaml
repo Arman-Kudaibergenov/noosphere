@@ -1,0 +1,108 @@
+name: ci-cd
+on:
+  push:
+    branches: [main]
+
+jobs:
+  smoke:
+    runs-on: mac
+    steps:
+      - uses: actions/checkout@v4
+      - name: smoke (без сети)
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          cd "${{ github.workspace }}"
+          uv venv -q .venv-ci --python 3.12
+          uv pip install -q --python .venv-ci/bin/python -r requirements.txt
+          PYTHONUTF8=1 .venv-ci/bin/python scripts/smoke.py
+
+  deploy:
+    needs: smoke
+    runs-on: mac
+    steps:
+      - name: pull + деплой с откатом на Mac mini
+        # A3 (аудит 2026-10-29): set -euo pipefail и стоп на грязном дереве.
+        # Раньше было `set -u` без -e: git pull, прерванный untracked-файлом, не
+        # останавливал job — проба на :8301 шла на СТАРОМ коде, health OK, и деплой
+        # «успешно» перезапускал старое (тихий no-op). А при провале пробы
+        # rollback() делал git reset --hard по незакоммиченной работе владельца.
+        # Теперь: дерево грязное → деплой отменён до pull, ничего не тронуто.
+        # G6: prev SHA сохраняется ДО pull; новый код сначала поднимается на
+        # временном порту :8301 (keepalive :8300 его не трогает), health-опрос
+        # до 24с; только при ok глушится старый :8300 и стартует новый.
+        # host/port берутся из config.yaml (CI не форсирует --host, G1.4).
+        # Старт — каноническим scripts/noosphere-start.sh, чтобы журнал деплоя
+        # и боевой журнал были одним файлом (A5).
+        run: |
+          set -euo pipefail
+          export PATH="$HOME/.local/bin:$PATH"
+          cd ~/noosphere
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "deploy ОТМЕНЁН: боевое дерево грязное — боевой процесс собран не из git."
+            echo "Сначала закоммить или убери правки, затем перезапусти job:"
+            git status --short
+            exit 1
+          fi
+          git rev-parse HEAD > /tmp/noosphere.prev
+          git pull -q
+          echo "deploy: prev $(cat /tmp/noosphere.prev) -> $(git rev-parse --short HEAD)"
+          # зависимости боевого venv — из того же lock, что проверял CI (B6);
+          # venv создан uv и pip в нём нет — ставим uv'ом
+          uv pip install -q --python ./.venv/bin/python -r requirements.txt
+          PORT=$(./.venv/bin/python -c "import yaml; print((yaml.safe_load(open('config.yaml')) or {}).get('server', {}).get('port', 8300))")
+          LOGDIR="$HOME/noosphere/logs"
+          mkdir -p "$LOGDIR"
+          LOG="$LOGDIR/deploy-$(date +%Y%m%d-%H%M%S).log"
+          echo "deploy target port: $PORT, log: $LOG"
+
+          start_live() {
+            # канонический старт: сам читает host/port из config.yaml и пишет в logs/server-*.log
+            nohup bash "$HOME/bin/noosphere-start.sh" >/dev/null 2>&1 &
+          }
+
+          rollback() {
+            echo "ROLLBACK на $(cat /tmp/noosphere.prev)"
+            git reset --hard "$(cat /tmp/noosphere.prev)"
+            pkill -f "uvicorn server.main" || true
+            sleep 2
+            start_live
+            sleep 8
+            curl -sf -m 5 "http://127.0.0.1:$PORT/health" > /dev/null && echo "rollback health OK" || echo "rollback health FAIL"
+          }
+
+          # Проба нового кода на СВОБОДНОМ порту (loopback) и с проверкой, что
+          # отвечает именно наш сервис. Бой 02.11: порт 8301 оказался занят
+          # whisper-server (STT, поднят 01.11 19:16), который отвечает
+          # {"status":"ok"} на /health. Новый код падал с «address already in
+          # use», чужой сервис отвечал на пробу, гейт проходил зелёным — и деплой
+          # глушил боевой :8300 ради непроверенного кода. Два предохранителя:
+          # порт выбирается динамически (чужой процесс на нём появиться не может)
+          # и в ответе требуется "version" (его нет в /health whisper-server).
+          TMPPORT=$(./.venv/bin/python -c "import socket; s=socket.socket(); s.bind(('127.0.0.1',0)); print(s.getsockname()[1]); s.close()")
+          echo "deploy: проба нового кода на 127.0.0.1:$TMPPORT"
+          PYTHONUTF8=1 nohup ./.venv/bin/python -m uvicorn server.main:app --host 127.0.0.1 --port "$TMPPORT" >> "$LOG" 2>&1 &
+          TMPPID=$!
+          ok=""
+          for i in $(seq 1 12); do
+            sleep 2
+            if curl -sf -m 5 "http://127.0.0.1:$TMPPORT/health" | grep -q '"version"'; then ok=1; echo "tmp :$TMPPORT health OK after ~$((i*2))s (pid $TMPPID)"; break; fi
+          done
+          if [ -z "$ok" ]; then
+            echo "новый код не поднялся на :$TMPPORT — последние строки лога:"; tail -20 "$LOG"
+            kill $TMPPID 2>/dev/null || true
+            rollback
+            exit 1
+          fi
+          # переключение: глушим временный и старый, стартуем новый на основном
+          kill $TMPPID 2>/dev/null || true
+          sleep 1
+          pkill -f "uvicorn server.main" || true
+          sleep 2
+          start_live
+          for i in $(seq 1 12); do
+            sleep 2
+            if curl -sf -m 5 "http://127.0.0.1:$PORT/health" > /dev/null; then echo "health OK on :$PORT after ~$((i*2))s"; exit 0; fi
+          done
+          echo "health FAIL на :$PORT — последние строки лога:"; tail -20 "$LOG"
+          rollback
+          exit 1

@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+config.yaml
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# локальные референсы (не коммитить)
+docs-ref/
+
+# локальные бэкапы правок и рантайм-логи — в репозиторий не идут
+*.bak-*
+*.log
+*.pyc
+__pycache__/
+.qwen/devruns/
